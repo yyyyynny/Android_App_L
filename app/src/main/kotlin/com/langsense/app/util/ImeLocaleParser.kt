@@ -83,6 +83,9 @@ object ImeLocaleParser {
         EN -> "EN"
         // [일본어 비활성화] JA -> "日" (추후 재도입 위해 보존)
         ZH -> "中"
+        // 판별 실패는 사용자에게 "UN" 이라는 뜻 모를 라벨로 보이므로 중립 기호로 표시한다
+        // (부팅 직후 등 아직 IME 서브타입을 못 읽은 상태에서 잠깐 나타날 수 있다).
+        UNKNOWN -> "—"
         else -> lang.take(2).uppercase()
     }
 }

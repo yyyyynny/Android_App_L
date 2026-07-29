@@ -55,6 +55,14 @@ class SettingsActivity : AppCompatActivity() {
     /** onResume 동기화 중 onCheckedChanged 가 prefs 를 되쓰지 않도록 막는 가드. */
     private var syncingToggles = false
 
+    /**
+     * 설정 화면이 떠 있는 동안에도 값이 밖에서 바뀔 수 있다 — 배지 오버레이는 이 화면 위에도
+     * 떠 있어서, 보면서 배지를 탭해 래디얼 메뉴로 토글할 수 있기 때문. onResume 만으로는
+     * (액티비티가 계속 포그라운드라 호출되지 않아) 스위치가 stale 로 남는다.
+     */
+    private val prefsListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> syncToggles() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
@@ -222,6 +230,16 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         // 외부(래디얼 메뉴)에서 바뀐 토글 값을 현재 prefs 기준으로 다시 맞춘다(stale 표시 방지).
+        syncToggles()
+        prefs.register(prefsListener)
+    }
+
+    override fun onPause() {
+        prefs.unregister(prefsListener)
+        super.onPause()
+    }
+
+    private fun syncToggles() {
         syncingToggles = true
         boundToggles.forEach { (toggle, get) -> toggle.isChecked = get() }
         syncingToggles = false
@@ -332,6 +350,10 @@ class SettingsActivity : AppCompatActivity() {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
                     val v = min + p * step
                     valueLabel.text = getString(R.string.slider_value_short_format, v, suffix)
+                    // 저장을 onStopTrackingTouch 에만 두면 터치 드래그로만 값이 바뀐다 —
+                    // 키보드/D-pad/TalkBack 조작은 이 콜백만 오므로 화면 숫자만 바뀌고 저장이
+                    // 안 됐다(접근성 앱의 설정 화면이 접근성 조작 불가였던 문제).
+                    if (fromUser) onChange(v)
                 }
 
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -359,6 +381,8 @@ class SettingsActivity : AppCompatActivity() {
         initialHex: String,
         onPicked: (String) -> Unit
     ): View {
+        // 마지막으로 확정된 유효 색. 잘못된 입력으로 commit 이 거부될 때 입력칸을 되돌리는 기준.
+        var currentHex = initialHex
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(10), 0, dp(4))
@@ -384,7 +408,15 @@ class SettingsActivity : AppCompatActivity() {
         applyPreview(preview, initialHex)
 
         fun commit(raw: String) {
-            val normalized = Prefs.normalizeHex(raw)
+            // 파싱 실패 시 normalizeHex 는 기본 회색을 돌려준다 — 그대로 저장하면 입력 도중
+            // 포커스를 잃었을 때(팔레트 스크롤 등) 사용자의 기존 색이 말없이 회색으로 날아간다.
+            // 유효하지 않으면 저장하지 않고 현재 값으로 입력칸만 되돌린다.
+            val normalized = Prefs.normalizeHexOrNull(raw)
+            if (normalized == null) {
+                hexInput.setText(currentHex)
+                return
+            }
+            currentHex = normalized
             hexInput.setText(normalized)
             applyPreview(preview, normalized)
             onPicked(normalized)

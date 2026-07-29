@@ -44,6 +44,13 @@ class BadgeOverlayView(
         text = label
     }
 
+    /** 탭 동작을 performClick 경유로 둬 TalkBack 등 접근성 도구로도 메뉴를 열 수 있게 한다. */
+    override fun performClick(): Boolean {
+        super.performClick()
+        onTap()
+        return true
+    }
+
     /**
      * 배지 탭 피드백 펄스 (추가 기능 1, radial-menu.html 의 badge pulse 이식).
      * 래디얼 메뉴를 열거나 닫을 때 배지가 살짝 커졌다 돌아오는 짧은 스케일 연출. 외형/설정은 바꾸지 않는다.
@@ -147,7 +154,14 @@ class BadgeOverlayView(
                 }
                 MotionEvent.ACTION_UP -> {
                     // 드래그면 위치 저장, 단순 탭이면 간편 메뉴 열기.
-                    if (dragging) onPositionSaved(params.x, params.y) else onTap()
+                    if (dragging) onPositionSaved(params.x, params.y) else performClick()
+                    true
+                }
+                // 드래그 중 시스템이 제스처를 가로채면 CANCEL 로 끝난다 — 여기서 저장하지 않으면
+                // 옮긴 위치가 유실돼 다음 표시 때 예전 자리로 돌아간다.
+                MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) onPositionSaved(params.x, params.y)
+                    dragging = false
                     true
                 }
                 else -> false
@@ -157,12 +171,21 @@ class BadgeOverlayView(
 
     /**
      * 현재 params 좌표가 화면 밖이면 화면 안으로 되돌린다(회전/해상도 변경, 저장 좌표 복원 대비).
-     * 저장값(prefs)은 건드리지 않는다 — 회전했다 되돌아오면 사용자가 저장한 원위치가 유지되도록,
-     * 표시할 때마다 그 시점의 화면에 맞춰 보정만 한다.
+     * 저장값(prefs)은 건드리지 않는다 — 사용자가 저장한 위치는 그대로 두고, 표시할 때마다 그
+     * 시점의 화면에 맞춰 보정만 한다([moveWithinScreen] 참조).
      */
-    fun ensureOnScreen() {
-        val cx = clampX(params.x)
-        val cy = clampY(params.y)
+    fun ensureOnScreen() = moveWithinScreen(params.x, params.y)
+
+    /**
+     * [x], [y] 로 옮기되 화면 경계 안으로 보정한다.
+     *
+     * 회전 시 저장값을 **다시** 적용하는 데 쓴다 — 클램프는 파괴적이라(세로에서 아래쪽이던 배지가
+     * 가로에서 위로 눌린 뒤 다시 세로로 돌아와도 눌린 좌표가 유효 범위라 복원되지 않는다),
+     * 매번 저장 원본에서 출발해야 "회전 왕복 시 원위치 복귀"가 성립한다.
+     */
+    fun moveWithinScreen(x: Int, y: Int) {
+        val cx = clampX(x)
+        val cy = clampY(y)
         if (cx == params.x && cy == params.y) return
         params.x = cx
         params.y = cy

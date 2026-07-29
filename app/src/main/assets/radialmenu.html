@@ -313,6 +313,12 @@ html, body {
 body.app-mode { background: transparent; }
 body.app-mode .badge { display: none; }
 
+/* 앱 모드: 스테이지(.menu)는 배지 위치까지 덮는 460×420 사각형이라, 그 배경이 탭을 삼키면
+   네이티브 배지를 다시 눌러도 메뉴가 닫히지 않는다(배지는 이 창 아래에 있다). 오브에만
+   터치를 받게 하고 나머지는 통과시켜, 배지 재탭·빈 곳 탭이 모두 스크림의 닫기로 이어지게 한다. */
+body.app-mode .menu { pointer-events: none; }
+body.app-mode .menu .orb-wrap { pointer-events: auto; }
+
 /* 앱 모드: 배지가 화면 좌측이라 좌향 팬이 화면 안에 안 들어가면 팬 전체를 좌우 반전해 오른쪽으로
    연다(KikiInit 참조). 라벨 텍스트만 한 번 더 반전해 읽기 방향을 되돌린다 — app-mode 에선 HTML
    자체 배지가 숨겨져 있으므로(위) 라벨 외에 텍스트를 되돌릴 요소가 없다. */
@@ -378,16 +384,22 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
   /* ── App(WebView) 브리지 감지 — 있으면 메뉴 전용 모드로 동작 ── */
   const BRIDGE = window.KikiNative || null;
 
-  /* build positions: index 0 = top, index 4 = bottom */
-  const positions = LABELS.map((_, i) => {
-    const deg = ARC_END - (ARC_END - ARC_START) * (i / (N - 1)); // 250 -> 110
-    const rad = deg * Math.PI / 180;
-    return {
-      x: BX + R * Math.cos(rad),
-      y: BY + R * Math.sin(rad),
-      size: (i === 0 || i === N - 1) ? 88 : 96   // ends 88px, middle 96px
-    };
-  });
+  /* build positions: index 0 = top, index 4 = bottom
+     [앱 모드 추가] tiltDeg 는 팬 전체를 배지 기준으로 회전시킨다(원본 각도식 + 상수).
+     배지가 화면 최상/최하단이거나 가로 모드라 세로로 팬이 안 들어갈 때만 KikiInit 이
+     0 이 아닌 값을 쓴다 — tilt=0 이면 원본 지오메트리 그대로다. */
+  function computePositions(tiltDeg) {
+    return LABELS.map((_, i) => {
+      const deg = ARC_END - (ARC_END - ARC_START) * (i / (N - 1)) + tiltDeg; // 250 -> 110 (+tilt)
+      const rad = deg * Math.PI / 180;
+      return {
+        x: BX + R * Math.cos(rad),
+        y: BY + R * Math.sin(rad),
+        size: (i === 0 || i === N - 1) ? 88 : 96   // ends 88px, middle 96px
+      };
+    });
+  }
+  let positions = computePositions(0);
 
   /* ── SVG lines: spokes (badge->orb) + arc (orb->orb) ──── */
   const linesGlow  = document.getElementById('linesGlow');
@@ -446,10 +458,23 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
     lineBreathers.push({ glow, crisp, d0, d1, d2, idx: lineAnimIndex++ });
   }
 
-  /* spokes: trim from badge edge (~36px) to orb edge (~44px) */
-  positions.forEach((p, i) => addLine({x:BX,y:BY}, p, 'b', i, 36, 44));
-  /* arc between adjacent orbs: trim ~46px each side to reach orb edges */
-  for (let i = 0; i < N - 1; i++) addLine(positions[i], positions[i+1], i, i+1, 46, 46);
+  /* 선 전체를 현재 positions 로 다시 만든다(틸트 재배치 시 재호출).
+     crispPaths/lineBreathers/lineElems 는 const 배열이라 in-place 로 비우고(외부에서 참조를
+     붙잡고 있는 highlightLines 등이 계속 유효), lineAnimIndex 도 0 으로 되돌려 호흡 스태거가
+     재빌드마다 밀리지 않게 한다. */
+  function buildLines() {
+    linesGlow.innerHTML = '';
+    linesCrisp.innerHTML = '';
+    crispPaths.length = 0;
+    lineBreathers.length = 0;
+    lineElems.length = 0;
+    lineAnimIndex = 0;
+    /* spokes: trim from badge edge (~36px) to orb edge (~44px) */
+    positions.forEach((p, i) => addLine({x:BX,y:BY}, p, 'b', i, 36, 44));
+    /* arc between adjacent orbs: trim ~46px each side to reach orb edges */
+    for (let i = 0; i < N - 1; i++) addLine(positions[i], positions[i+1], i, i+1, 46, 46);
+  }
+  buildLines();
 
   /* ── 선의 곡선 호흡(travel dot 대체) ────────────────────
      각 선(glow+crisp)의 path 'd' 를 d0→d1→d0→d2→d0 로 천천히 보간한다. 끝점은 d0/d1/d2 모두
@@ -527,10 +552,11 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
       if (ev.clientX !== undefined && ev.clientX !== 0) {
         px = ev.clientX - rect.left; py = ev.clientY - rect.top;
         // 미러 모드(scaleX(-1))에선 자식의 레이아웃 x 가 시각적으로 반전되므로, 화면 좌표에서
-        // 얻은 시각적 오프셋을 레이아웃 좌표로 되돌린다(pos.x 폴백은 이미 레이아웃 좌표라 무보정).
+        // 얻은 시각적 오프셋을 레이아웃 좌표로 되돌린다(폴백은 이미 레이아웃 좌표라 무보정).
         if (menu.classList.contains('mirror')) px = rect.width - px;
       } else {
-        px = pos.x; py = pos.y;
+        // 생성 시점의 pos 를 캡처하면 틸트 재배치 후 stale 이므로 현재 좌표를 읽는다.
+        px = positions[i].x; py = positions[i].y;
       }
       rippleBurst(px, py);
       orb.classList.remove('tapped'); void orb.offsetWidth; orb.classList.add('tapped');
@@ -546,6 +572,17 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(e); }
     });
   });
+
+  /* 틸트 재배치: 오브를 다시 만들지 않고(리스너·bob 파라미터 유지) 좌표만 갱신한다. */
+  function applyOrbPositions() {
+    orbWraps.forEach((w, i) => {
+      const p = positions[i];
+      w.style.left = p.x + 'px';
+      w.style.top  = p.y + 'px';
+      w.style.setProperty('--dx', (BX - p.x).toFixed(1) + 'px');
+      w.style.setProperty('--dy', (BY - p.y).toFixed(1) + 'px');
+    });
+  }
 
   function highlightLines(idx, on) {
     crispPaths.forEach(p => {
@@ -688,7 +725,10 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
   }
 
   /* ── 초기화: 선 곡선 호흡/별 구성 + 모드별 시작 ──────────── */
+  let started = false;
   function start(reduce) {
+    if (started) return; // 폴백 타이머와 KikiInit 이 겹쳐도 별/호흡이 이중 생성되지 않게
+    started = true;
     applyLineBreath(reduce);
     buildStars(reduce);
     if (reduce) document.body.classList.add('reduce-motion');
@@ -713,30 +753,60 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
       // 클램프는 left 를 [vw-460, 0] 좁은 밴드로 뭉개, 배지를 어디로 옮겨도 메뉴가 화면 우측
       // 고정 위치에서 열리는 버그였다. 배지가 화면 좌측이라 좌향 팬이 안 들어가면 팬을 좌우
       // 반전(.mirror)해 오른쪽으로 연다(원본 지오메트리는 그대로, CSS scaleX(-1)만 사용).
+      // 세로로 안 들어가면(배지가 최상/최하단, 또는 가로 모드) 팬을 기울여(computePositions)
+      // 아래/위로 열리게 한다 — 클램프로 배지에서 떨어뜨리는 대신 방향을 바꾸는 쪽이 자연스럽다.
       if (typeof cfg.anchorX === 'number' && typeof cfg.anchorY === 'number') {
         menu.style.position = 'absolute';
         const vw = window.innerWidth, vh = window.innerHeight;
         const PAD = 16, LABEL_H = 26, ORB_HALF_H = 28;
-        let minX = BX, maxX = BX, minY = BY, maxY = BY;
-        positions.forEach(p => {
-          const hw = p.size / 2;
-          minX = Math.min(minX, p.x - hw); maxX = Math.max(maxX, p.x + hw);
-          minY = Math.min(minY, p.y - ORB_HALF_H);
-          maxY = Math.max(maxY, p.y + ORB_HALF_H + LABEL_H);
-        });
-        // 배지 지점(BX,BY) 기준 팬이 뻗는 거리(좌/우/상/하).
-        const extLeft = BX - minX + PAD, extRight = maxX - BX + PAD;
-        const extUp = BY - minY + PAD, extDown = maxY - BY + PAD;
         // 화면이 좁아 하한>상한이 되면(어느 쪽에도 못 들어감) 중앙으로 축퇴.
         const clamp = (v, lo, hi) => hi < lo ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v));
-        const mirror = cfg.anchorX < extLeft && vw - cfg.anchorX > cfg.anchorX;
-        menu.classList.toggle('mirror', mirror);
-        const ax = mirror ? clamp(cfg.anchorX, extRight, vw - extLeft)
-                          : clamp(cfg.anchorX, extLeft, vw - extRight);
-        const ay = clamp(cfg.anchorY, extUp, vh - extDown);
+
+        // 후보 틸트의 배치 결과: 팬 실측 범위 → 미러 여부 → 클램프된 앵커 → 배지 이탈 거리.
+        function evaluate(tilt) {
+          const pts = computePositions(tilt);
+          let minX = BX, maxX = BX, minY = BY, maxY = BY;
+          pts.forEach(p => {
+            const hw = p.size / 2;
+            minX = Math.min(minX, p.x - hw); maxX = Math.max(maxX, p.x + hw);
+            minY = Math.min(minY, p.y - ORB_HALF_H);
+            maxY = Math.max(maxY, p.y + ORB_HALF_H + LABEL_H);
+          });
+          // 배지 지점(BX,BY) 기준 팬이 뻗는 거리(좌/우/상/하).
+          const extLeft = BX - minX + PAD, extRight = maxX - BX + PAD;
+          const extUp = BY - minY + PAD, extDown = maxY - BY + PAD;
+          const mirror = cfg.anchorX < extLeft && vw - cfg.anchorX > cfg.anchorX;
+          const ax = mirror ? clamp(cfg.anchorX, extRight, vw - extLeft)
+                            : clamp(cfg.anchorX, extLeft, vw - extRight);
+          const ay = clamp(cfg.anchorY, extUp, vh - extDown);
+          // 팬이 화면보다 커서 어떻게 놓아도 잘리는 양(가로 모드에서 세로가 특히 문제).
+          const overflow = Math.max(0, (extUp + extDown) - vh) +
+                           Math.max(0, (extLeft + extRight) - vw);
+          // 점수(작을수록 좋음) = 배지 이탈 거리 + 잘림량. 잘림은 항목을 아예 못 누르게 하므로
+          // 이탈보다 무겁게 친다 — 축퇴 클램프가 "이탈 0"으로 보여 잘린 배치를 고르는 걸 막는다.
+          const score = Math.abs(ax - cfg.anchorX) + Math.abs(ay - cfg.anchorY) + overflow * 4;
+          return { tilt, pts, mirror, ax, ay, score, overflow };
+        }
+
+        let best = evaluate(0);
+        // 세로 클램프가 발동했거나(=배지에서 위/아래로 밀림) 팬이 잘릴 때만 틸트를 시도한다.
+        // 배지가 화면 위쪽이면 음수 틸트(팬이 아래로), 아래쪽이면 양수 틸트(팬이 위로).
+        if (best.overflow > 0 || Math.abs(best.ay - cfg.anchorY) > 1) {
+          const sign = cfg.anchorY < vh / 2 ? -1 : 1;
+          for (const t of [sign * 35, sign * 70]) {
+            const cand = evaluate(t);
+            if (cand.score < best.score - 0.5) best = cand; // 실질 개선일 때만(작은 틸트 우선)
+          }
+        }
+        if (best.tilt !== 0) {
+          positions = best.pts;
+          buildLines();
+          applyOrbPositions();
+        }
+        menu.classList.toggle('mirror', best.mirror);
         // scaleX(-1) 은 박스 중심 기준 반전이라, 미러 시 배지 지점의 시각적 x 는 (스테이지폭-BX).
-        menu.style.left = (ax - (mirror ? 460 - BX : BX)) + 'px';
-        menu.style.top  = (ay - BY) + 'px';
+        menu.style.left = (best.ax - (best.mirror ? 460 - BX : BX)) + 'px';
+        menu.style.top  = (best.ay - BY) + 'px';
       }
       start(!!cfg.reduceMotion);
       // 다음 프레임에 펼침(트랜지션이 걸리도록).
@@ -744,8 +814,14 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
     };
     // 네이티브가 배지 재탭 등으로 우아한 수납을 요청할 때(수납 애니메이션만; 창 제거는 네이티브).
     window.KikiCollapse = function () { setOpen(false); };
-    // KikiInit 이 끝내 호출되지 않아도(폴백) 기본값으로 열리게 한다.
-    setTimeout(() => { if (!isOpen && !menu.classList.contains('open')) { start(false); setOpen(true); } }, 400);
+    // KikiInit 이 끝내 오지 않으면(로드 지연/실패) 기본 라벨로 열지 않는다 — HTML 기본 라벨
+    // 순서와 네이티브 항목 순서가 달라 "숨기기를 눌렀는데 앱이 열리는" 오동작이 되기 때문.
+    // 대신 창을 닫아 사용자가 화면을 되찾게 한다(네이티브 워치독과 이중 안전망).
+    setTimeout(() => {
+      if (!isOpen && !menu.classList.contains('open')) {
+        if (BRIDGE.onDismiss) { try { BRIDGE.onDismiss(); } catch (e) {} }
+      }
+    }, 1500);
   } else {
     start(false);
   }

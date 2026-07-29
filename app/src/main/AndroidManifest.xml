@@ -2,15 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 필수 권한 -->
+    <!-- 필수 권한 (오버레이 표시). 접근성 서비스는 BIND_ACCESSIBILITY_SERVICE 를 service 선언에서
+         android:permission 으로 요구하므로 uses-permission 이 아니다.
+         ※ 포그라운드 서비스 권한(FOREGROUND_SERVICE / _SPECIAL_USE)은 선언하지 않는다 — 이 앱은
+         startForeground 를 호출하는 서비스가 없다(접근성 서비스는 시스템이 바인드해 유지). 특히
+         _SPECIAL_USE 는 Play 심사에서 별도 정당화 사유 제출 의무가 있어 미사용 선언은 반려 위험.
+         배터리 최적화도 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS(제한 권한) 없이 시스템 설정 화면만
+         띄우므로(PermissionHelper) 선언하지 않는다. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-
-    <!-- Android 14+ (API 34) 전용 — specialUse 포그라운드 서비스 -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-
-    <!-- 배터리 최적화 예외 안내용 -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="true"

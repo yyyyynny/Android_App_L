@@ -92,12 +92,18 @@ class FlashOverlayView(context: Context) : FrameLayout(context) {
             .setStartDelay(durationMs / 2) // 잠깐 보이게 유지 후 페이드아웃
             .setDuration(durationMs)
             .withEndAction {
-                // cancel() 에 의한 호출(재진입)이거나 이미 윈도우에서 떨어졌다면(다른 플래시로 교체됨)
-                // 콜백을 무시한다 — 그렇지 않으면 cancel() 호출 도중 이 콜백이 다시 removeFlash() 를
-                // 유발해 재귀 호출된다.
-                if (cancelled || !isAttachedToWindow) return@withEndAction
+                // cancel() 에 의한 호출(재진입)이면 무시한다 — 그렇지 않으면 cancel() 호출 도중
+                // 이 콜백이 다시 removeFlash() 를 유발해 재귀 호출된다.
+                // 과거엔 `|| !isAttachedToWindow` 도 함께 걸었는데, 그 경로로 빠지면 onEnd() 가
+                // 영영 호출되지 않아 투명해진 전체화면 창이 무기한 잔류했다(창 누수). 윈도우에서
+                // 떨어지는 경로(onDetachedFromWindow)는 항상 cancelled 를 먼저 세우므로 이 조건만으로
+                // 재진입 보호는 충분하다.
+                if (cancelled) return@withEndAction
                 if (remaining > 1) {
-                    val next = Runnable { playCycle(remaining - 1, durationMs, onEnd) }
+                    val next = Runnable {
+                        pendingCycle = null
+                        playCycle(remaining - 1, durationMs, onEnd)
+                    }
                     pendingCycle = next
                     postDelayed(next, INTER_BLINK_MS)
                 } else {

@@ -48,6 +48,9 @@ class QuickMenuOverlayView(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var dismissed = false
 
+    /** HTML 로드가 완료돼 메뉴가 초기화됐는지(워치독이 창을 닫을지 판단). */
+    private var menuReady = false
+
     private val webView = WebView(context).apply {
         setBackgroundColor(Color.TRANSPARENT) // 실제 화면 위에 오버레이 — 배경 투명
         isVerticalScrollBarEnabled = false
@@ -56,10 +59,32 @@ class QuickMenuOverlayView(
         settings.javaScriptEnabled = true
         settings.loadWithOverviewMode = false
         settings.useWideViewPort = false
+        // 시스템 글꼴 크기(접근성 설정)가 오브 라벨을 밀어내지 않도록 배율 고정 — 오브 치수는
+        // px 고정이라 확대되면 라벨이 오브 밖으로 넘치거나 서로 겹친다.
+        settings.textZoom = 100
         addJavascriptInterface(WebBridge(), "KikiNative")
         webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String?) {
                 initMenu()
+            }
+
+            // 로드 실패 시 창을 닫는다 — 이 창은 전체 화면을 덮고 터치를 소비하므로,
+            // 열리지도 닫히지도 않으면 사용자가 화면을 되찾을 방법이 없다.
+            override fun onReceivedError(
+                view: WebView,
+                request: android.webkit.WebResourceRequest?,
+                error: android.webkit.WebResourceError?
+            ) {
+                if (request?.isForMainFrame != false) mainHandler.post { dismiss() }
+            }
+
+            override fun onRenderProcessGone(
+                view: WebView,
+                detail: android.webkit.RenderProcessGoneDetail?
+            ): Boolean {
+                // true 를 반환해야 앱이 함께 죽지 않는다(반환 안 하면 프로세스 종료).
+                mainHandler.post { dismiss() }
+                return true
             }
         }
     }
@@ -67,10 +92,14 @@ class QuickMenuOverlayView(
     init {
         addView(webView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         webView.loadUrl("file:///android_asset/radialmenu.html")
+        // 워치독: 로드가 끝내 완료되지 않으면(에러 콜백조차 안 오는 경우 포함) 창을 닫는다.
+        mainHandler.postDelayed({ if (!menuReady) dismiss() }, LOAD_TIMEOUT_MS)
     }
 
     /** 로드 완료 후 배지 위치(dp)·라벨·저사양 여부를 HTML 로 주입하고 자동 펼침. */
     private fun initMenu() {
+        if (dismissed || !isAttachedToWindow) return
+        menuReady = true
         val density = resources.displayMetrics.density.coerceAtLeast(0.1f)
         val (ax, ay) = anchorProvider()
         val anchorXdp = ax / density
@@ -133,5 +162,12 @@ class QuickMenuOverlayView(
     companion object {
         /** HTML 수납 애니메이션(≈0.46s 트랜지션) 후 창을 제거하기까지의 지연(ms). */
         private const val COLLAPSE_REMOVE_MS = 320L
+
+        /**
+         * 로드 워치독(ms). 이 시간 안에 메뉴가 초기화되지 않으면 창을 제거한다 —
+         * 전체 화면을 덮고 터치를 소비하는 창이라 열리지도 닫히지도 않으면 화면이 잠긴다.
+         * 저사양 기기의 콜드 WebView 초기화(수백 ms~1초대)를 충분히 덮는 값.
+         */
+        private const val LOAD_TIMEOUT_MS = 3000L
     }
 }

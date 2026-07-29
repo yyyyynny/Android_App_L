@@ -86,6 +86,8 @@
     <string name="overlay_no_focus">선택되지 않음</string>
     <string name="chip_replace_format">「%1$s」 교체?</string>
     <string name="replace_copied_fallback">교체 결과를 클립보드에 복사했습니다. 붙여넣기 해주세요.</string>
+    <string name="quick_menu_unavailable">지금은 메뉴를 열 수 없습니다. 시스템 WebView 업데이트 후 다시 시도해 주세요.</string>
+    <string name="quick_launch_failed">화면을 열 수 없습니다. 앱에서 직접 실행해 주세요.</string>
 
     <!-- 설정 슬라이더 현재 값(우측 정렬 표시): "값접미사" (예: "200ms") -->
     <string name="slider_value_short_format">%1$d%2$s</string>

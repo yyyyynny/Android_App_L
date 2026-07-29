@@ -81,6 +81,18 @@ class ImeStateDetector(
     /** "변경 없음"으로 끝난 평가를 백오프 재확인할 남은 횟수. 강한 신호가 올 때마다 충전된다. */
     private var retriesLeft = 0
 
+    /**
+     * 현재 재확인 체인(합치기 배치 + 백오프 재시도 전체)이 강한 신호에서 비롯됐는지.
+     * 폴백 기기(권위 매핑 불가)에서 stale 가능한 IMM 값은 **강한 신호가 포함된 체인에서만**
+     * 발동 근거로 쓴다 — 그렇지 않으면 발동 후 [ECHO_GUARD_MS] 가 지난 뒤 아무 앱의 윈도우
+     * 이벤트(약한 신호)가 stale IMM 을 "직전 언어로의 새 전환"으로 재발동시켜, 곧이은 정정
+     * 발동이 그 플래시를 절단하는 "짧은 추가 깜박임"을 만든다. 시간 가드가 아니라 신호 출처
+     * 게이트라 정상 빠른 재전환과 무관하다(회귀 없음).
+     * 약한 신호는 절대 false 로 덮어쓰지 않고(백오프 대기 중 클로버 방지), 발동 시·재시도
+     * 예산 소진 시·stop() 에서만 리셋한다.
+     */
+    private var pendingStrong = false
+
     /** 발동 횟수(전환 1회당 1 증가). 한 전환에 정확히 1회만 늘어야 함을 로그로 검증하기 위함. */
     private var emitCount = 0
 
@@ -178,6 +190,7 @@ class ImeStateDetector(
         pendingPopupHint = null
         pendingSince = 0L
         retriesLeft = 0
+        pendingStrong = false
         pendingRevertKey = null
         revertDeferredAt = 0L
         runCatching { appContext.unregisterReceiver(imeChangeReceiver) }
@@ -221,7 +234,10 @@ class ImeStateDetector(
             val echo = popupHint == prevLang && now - lastEmitAt < ECHO_GUARD_MS
             if (!noNews && !echo) pendingPopupHint = popupHint
         }
-        if (strong) retriesLeft = MAX_NOOP_RETRIES
+        if (strong) {
+            retriesLeft = MAX_NOOP_RETRIES
+            pendingStrong = true
+        }
         if (pendingSince == 0L) pendingSince = now
         handler.removeCallbacks(recheckRunnable)
         val delay = if (now - pendingSince >= COALESCE_MAX_WAIT_MS) 0L else COALESCE_MS
@@ -259,12 +275,15 @@ class ImeStateDetector(
             if (!changed && hint != null && emitIfChanged(hint, authoritative = false)) return
         } else {
             if (hint != null && emitIfChanged(hint, authoritative = false)) return
-            if (emitIfChanged(immFallbackLang(), authoritative = false)) return
+            // IMM 폴백은 stale 가능 → 강한 신호에서 비롯된 체인에서만 발동 근거로 인정.
+            if (pendingStrong && emitIfChanged(immFallbackLang(), authoritative = false)) return
         }
         if (retriesLeft > 0) {
             val attempt = MAX_NOOP_RETRIES - retriesLeft
             retriesLeft--
             handler.postDelayed(recheckRunnable, RETRY_BACKOFF_MS[attempt])
+        } else {
+            pendingStrong = false // 발동 없이 재시도 예산 소진 → 체인 종료
         }
     }
 
@@ -317,6 +336,7 @@ class ImeStateDetector(
         lastState = ImeState(lang, currentSubtypeId(), System.currentTimeMillis())
         lastEmitAt = SystemClock.uptimeMillis()
         retriesLeft = 0 // 발동했으면 이 배치의 재시도는 끝
+        pendingStrong = false // 발동 = 체인 종료
         emitCount++
         // 한 전환당 정확히 1회만 찍혀야 한다(실기기 검증용 로그).
         Log.d(TAG, "language change emitted: $lang (emit #$emitCount, authoritative=$authoritative)")
@@ -426,10 +446,13 @@ class ImeStateDetector(
         /**
          * "권위 역행" 의심 창(ms): 마지막 발동 후 이 시간 안에 직전 언어로 되돌아가는 권위 키
          * 변경은 서브타입 이중 기록(바운스)의 중간값일 수 있어 지연 확인 대상이 된다.
-         * 바운스의 두 기록은 실질 동시(수십 ms 간격)지만 합치기+백오프 케이던스 때문에 관측이
-         * 최대 ~550ms 벌어질 수 있어 그보다 약간 넉넉히 잡는다.
+         * 바운스의 두 기록은 실질 동시(수십 ms 간격)지만, 저사양 전파 지연 시 관측은 합치기
+         * 상한([COALESCE_MAX_WAIT_MS]=400) + 백오프(200+400) = 최대 ~1000ms 까지 벌어질 수
+         * 있어 그보다 여유 있게 잡는다(과거 600ms 는 자기 케이던스를 못 덮어 늦은 바운스가
+         * 의심 판정을 탈출했다). 차단이 아니라 250ms 지연 확인이므로 이 창 안의 진짜 재전환도
+         * 유실되지 않는다.
          */
-        private const val REVERT_CONFIRM_WINDOW_MS = 600L
+        private const val REVERT_CONFIRM_WINDOW_MS = 1200L
 
         /** 권위 역행 의심 시 재확인까지의 유예(ms). 바운스 최종값이 설정에 반영되기에 충분한 시간. */
         private const val REVERT_CONFIRM_DELAY_MS = 250L

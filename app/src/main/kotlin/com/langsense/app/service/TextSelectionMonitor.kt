@@ -40,6 +40,10 @@ class TextSelectionMonitor(
 
             val selected = text.substring(selStart, selEnd)
             if (selected.isBlank() || selected.length < MIN_SELECTION) return
+            // 전체 선택(Ctrl+A) 같은 대량 선택은 한영타 교정 대상이 아니다. 상한이 없으면
+            // 메인 스레드에서 수만 자를 변환하고, 교체 시 전체 텍스트를 Binder 로 넘겨
+            // 트랜잭션 한도(≈1MB)를 넘길 수 있다.
+            if (selected.length > MAX_SELECTION) return
 
             val confidence = HangulConverter.detectEnglishToKorean(selected)
             if (confidence * 100f < confidencePercentProvider()) return
@@ -56,5 +60,8 @@ class TextSelectionMonitor(
 
     companion object {
         const val MIN_SELECTION = 2
+
+        /** 한영타 교정이 의미 있는 선택 길이 상한(문자). 단어~짧은 문장 범위를 넉넉히 덮는다. */
+        const val MAX_SELECTION = 200
     }
 }

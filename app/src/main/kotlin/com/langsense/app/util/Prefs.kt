@@ -208,14 +208,21 @@ class Prefs(context: Context) {
         const val KEY_COLOR_JA = "color_ja" // [일본어 비활성화] 미사용, 보존
 
         /** "#rrggbb" 형식으로 정규화. 유효하지 않으면 기본 회색. */
-        fun normalizeHex(input: String): String {
+        fun normalizeHex(input: String): String = normalizeHexOrNull(input) ?: DEFAULT_OTHER
+
+        /**
+         * [normalizeHex] 와 같지만 유효하지 않으면 기본값 대신 null.
+         * 사용자 입력을 저장하기 전에는 이쪽을 써서, 잘못된 입력이 기존 색을 회색으로
+         * 덮어쓰지 않게 한다(입력 도중 포커스가 빠지는 경우 등).
+         */
+        fun normalizeHexOrNull(input: String): String? {
             val s = input.trim()
             val withHash = if (s.startsWith("#")) s else "#$s"
             return try {
                 Color.parseColor(withHash) // 검증만
                 withHash.uppercase()
             } catch (e: IllegalArgumentException) {
-                DEFAULT_OTHER
+                null
             }
         }
     }

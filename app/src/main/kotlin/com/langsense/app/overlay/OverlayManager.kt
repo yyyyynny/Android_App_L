@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
@@ -71,37 +72,49 @@ class OverlayManager(private val context: Context, private val prefs: Prefs) {
     fun showFlash(lang: String) = onMain {
         if (released) return@onMain
         if (!prefs.flashEnabled) return@onMain
+        // 언어 미판별(UNKNOWN)은 사용자에게 "UNKNOWN" 텍스트 플래시로 노출하지 않는다.
+        if (lang == ImeLocaleParser.UNKNOWN) return@onMain
         if (!prefs.isLangEnabled(lang)) return@onMain
-        // 렌더 단계 최종 안전망: 색과 무관하게 최소 간격(LANG_FLASH_MIN_INTERVAL_MS) 안의 재요청은
-        // 같은 전환에서 비롯된 중복으로 보고 건너뛴다. 근본 방어는 ImeStateDetector 의 권위 소스 읽기
-        // (stale 없는 설정값 직접 읽기)이므로 이 창은 짧게만 둔다 — 과거 700ms 는 빠른 정상 재전환
-        // (1초 내 한→영→한)의 두 번째 플래시까지 삼켜 "반응이 씹히는" 원인이었다.
+        // 렌더 단계 안전망 두 겹. 근본 방어는 ImeStateDetector 이며 여기는 최종 시각 방어일 뿐이다.
+        // ① 색과 무관한 에피소드 최소 간격(LANG_FLASH_MIN_INTERVAL_MS=300ms) — 같은 전환에서
+        //    비롯된 즉발 중복 억제. 과거 700ms 는 빠른 정상 재전환까지 삼켜 "씹힘"의 원인이었다.
+        // ② 동일 색 중복 억제 창 = "직전 재생의 실제 총 길이 + 꼬리 여유(FLASH_DEDUP_MS)".
+        //    시작 시각 기준 고정 350ms 는 짧은 설정(100ms×1회=총 150ms)에서 잔존 중복(~350~550ms
+        //    후 도착)이 창 만료 직후 별개 깜박임으로 렌더되는 원인이었다.
+        // 두 검사 모두 통과했을 때만 상태를 갱신한다 — 억제된 요청이 창을 앞으로 밀어
+        // 정당한 다음 플래시까지 삼키지 않게 하기 위함.
         val now = SystemClock.uptimeMillis()
-        if (now - lastLangFlashAt < LANG_FLASH_MIN_INTERVAL_MS) return@onMain
+        if (now - lastLangFlashAt < LANG_FLASH_MIN_INTERVAL_MS) {
+            Log.d(TAG, "flash suppressed(episode): lang=$lang, +${now - lastLangFlashAt}ms")
+            return@onMain
+        }
+        val colorArgb = prefs.flashColorArgb(lang)
+        if (colorArgb == lastFlashColorArgb && now - lastFlashAt < lastFlashTotalMs + FLASH_DEDUP_MS) {
+            Log.d(TAG, "flash suppressed(dedup): lang=$lang, +${now - lastFlashAt}ms")
+            return@onMain
+        }
         lastLangFlashAt = now
-        flash(prefs.flashColorArgb(lang), ImeLocaleParser.displayName(lang))
-    }
-
-    /** 포커스 없는 키 입력 경고(동일한 플래시 방식, 회색 + 안내 텍스트). */
-    fun showNoFocusWarning(message: String) = onMain {
-        if (released) return@onMain
-        flash(0xD9555555.toInt(), message)
-    }
-
-    private fun flash(colorArgb: Int, text: String) {
-        // 렌더 단계 안전망: 동일 색 플래시의 중복 억제 창을 "직전 재생의 실제 총 길이 + 꼬리 여유
-        // (FLASH_DEDUP_MS)"로 동적으로 잡는다. 과거의 시작 시각 기준 고정 350ms 는 짧은 설정
-        // (예: 100ms×1회 = 총 150ms)에서 잔존 중복 발화(합치기+백오프 케이던스상 ~350~550ms 후
-        // 도착)가 창 만료 직후 통과해, 화면이 빈 뒤 별개의 2번째 깜박임으로 렌더되는 원인이었다.
-        // 긴 설정(500ms×5회)에서는 재생 중 동일 색 재요청이 진행 중 플래시를 리셋하는 글리치도 막는다.
-        // (다른 언어는 색이 달라 정상 표시됨. 같은 언어가 이 창 안에 정당하게 두 번 오려면
-        //  X→Y→X 완전 토글 2회가 필요해 비현실적.)
-        val now = SystemClock.uptimeMillis()
-        if (colorArgb == lastFlashColorArgb && now - lastFlashAt < lastFlashTotalMs + FLASH_DEDUP_MS) return
         lastFlashColorArgb = colorArgb
         lastFlashAt = now
         lastFlashTotalMs = FlashOverlayView.totalDurationMs(prefs.flashDurationMs, prefs.flashCount)
+        Log.d(TAG, "flash render: lang=$lang, total=${lastFlashTotalMs}ms")
+        flash(colorArgb, ImeLocaleParser.displayName(lang))
+    }
 
+    /**
+     * 포커스 없는 키 입력 경고(동일한 플래시 방식, 회색 + 안내 텍스트).
+     * 재경고 쿨다운은 KeyEventMonitor 가 담당하므로 여기서는 바로 렌더하되, 언어 플래시의
+     * dedup 상태(lastFlashColorArgb 등)는 건드리지 않는다 — 과거엔 회색이 그 상태를 오염시켜
+     * 직후 언어 플래시의 중복 억제를 무력화했다.
+     */
+    fun showNoFocusWarning(message: String) = onMain {
+        if (released) return@onMain
+        Log.d(TAG, "flash render: no-focus warning")
+        flash(0xD9555555.toInt(), message)
+    }
+
+    /** 순수 렌더 — 중복 억제/상태 갱신은 호출자(showFlash) 책임. */
+    private fun flash(colorArgb: Int, text: String) {
         removeFlash()
         val view = FlashOverlayView(context)
         val params = WindowManager.LayoutParams(
@@ -195,6 +208,9 @@ class OverlayManager(private val context: Context, private val prefs: Prefs) {
 
     fun updateBadge(lang: String) = showBadge(lang)
 
+    /** 배지 창이 실제로 붙어 있는지(오버레이 권한이 늦게 부여된 경우의 재시도 판단용). */
+    fun hasBadge(): Boolean = badgeView != null
+
     /**
      * 화면 회전/크기 변경 시 서비스가 호출. 새 화면 밖에 남은 배지를 화면 안으로 되돌린다
      * (배지 창은 서비스 생존 동안 유지되므로 여기서 보정하지 않으면 배지가 사라진 것처럼 보이고
@@ -202,7 +218,13 @@ class OverlayManager(private val context: Context, private val prefs: Prefs) {
      */
     fun onScreenChanged() = onMain {
         if (released) return@onMain
-        badgeView?.let { v -> v.post { v.ensureOnScreen() } }
+        val v = badgeView ?: return@onMain
+        v.post {
+            // 저장된 원래 위치에서 다시 클램프한다. 현재 좌표만 클램프하면 세로→가로에서 눌린
+            // 값이 세로로 돌아와도 그대로 남아(유효 범위라 보정 안 됨) 배지가 영구히 이동한다.
+            if (prefs.badgeX >= 0 && prefs.badgeY >= 0) v.moveWithinScreen(prefs.badgeX, prefs.badgeY)
+            else v.ensureOnScreen()
+        }
     }
 
     fun hideBadge() = onMain { hideBadgeInternal() }
@@ -238,17 +260,28 @@ class OverlayManager(private val context: Context, private val prefs: Prefs) {
         // 최초 좌표를 폴백으로 남겨둔다.
         val initialAnchor = badgeCenterOnScreen(bv)
 
-        val view = QuickMenuOverlayView(
-            context,
-            anchorProvider = {
-                // 회전 등으로 다시 레이아웃될 때 배지의 "현재" 위치를 읽는다(Bug 6 — 고정 좌표로
-                // 열면 회전 후 예전 배지 위치를 중심으로 부채꼴이 펼쳐지는 문제 방지).
-                badgeView?.let { badgeCenterOnScreen(it) } ?: initialAnchor
-            },
-            items = quickMenuItems,
-            reduceMotion = prefs.radialReduceMotion // 저사양 모드면 펼친 뒤 연속 애니메이션을 끈다
-        ) {
-            hideQuickMenu()
+        // 생성자에서 WebView 를 만드는데, WebView 프로바이더가 업데이트 중이거나 비활성화면
+        // RuntimeException 이 던져진다. 이 경로는 배지 터치 리스너에서 바로 이어지므로 감싸지
+        // 않으면 프로세스가 죽고 시스템이 접근성 서비스를 꺼버린다(사용자가 수동 재활성화 필요).
+        val view = runCatching {
+            QuickMenuOverlayView(
+                context,
+                anchorProvider = {
+                    // 회전 등으로 다시 레이아웃될 때 배지의 "현재" 위치를 읽는다(Bug 6 — 고정 좌표로
+                    // 열면 회전 후 예전 배지 위치를 중심으로 부채꼴이 펼쳐지는 문제 방지).
+                    badgeView?.let { badgeCenterOnScreen(it) } ?: initialAnchor
+                },
+                items = quickMenuItems,
+                reduceMotion = prefs.radialReduceMotion // 저사양 모드면 펼친 뒤 연속 애니메이션을 끈다
+            ) {
+                hideQuickMenu()
+            }
+        }.getOrElse {
+            Log.w(TAG, "quick menu unavailable: ${it.javaClass.simpleName}")
+            runCatching {
+                Toast.makeText(context, R.string.quick_menu_unavailable, Toast.LENGTH_SHORT).show()
+            }
+            return@onMain
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -363,7 +396,18 @@ class OverlayManager(private val context: Context, private val prefs: Prefs) {
         val (es, ee) = resolveReplaceRange(liveText, s, e, original) ?: return
         val newText = liveText.substring(0, es) + converted + liveText.substring(ee)
 
-        if (trySetText(node, newText)) return
+        if (trySetText(node, newText)) {
+            // ACTION_SET_TEXT 는 Editable 전체를 갈아끼우므로 대부분의 에디터에서 커서가 문서
+            // 끝으로 튄다. 교체한 자리 뒤로 되돌려 사용자가 이어서 타이핑할 수 있게 한다
+            // (지원하지 않는 에디터도 있으므로 best-effort).
+            val caret = es + converted.length
+            val caretArgs = Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, caret)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, caret)
+            }
+            runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, caretArgs) }
+            return
+        }
         pasteFallback(node, converted, es, ee)
     }
 
@@ -413,11 +457,13 @@ class OverlayManager(private val context: Context, private val prefs: Prefs) {
             node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs)
         }.getOrDefault(false)
 
-        val pasted = runCatching {
+        // 선택이 안 잡혔으면 붙여넣기를 하면 안 된다 — "선택 영역 대체"가 아니라 현재 커서 위치에
+        // 그냥 삽입돼, 원래 영타는 남고 그 옆에 한글이 하나 더 붙는다(텍스트 파손).
+        val pasted = selectionSet && runCatching {
             node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
         }.getOrDefault(false)
 
-        if (!selectionSet || !pasted) {
+        if (!pasted) {
             // 붙여넣기까지 실패: 변환 결과가 클립보드에 있음을 사용자에게 안내.
             handler.post {
                 runCatching {
@@ -472,6 +518,9 @@ class OverlayManager(private val context: Context, private val prefs: Prefs) {
     private fun dp(value: Float): Int = (value * context.resources.displayMetrics.density).roundToInt()
 
     companion object {
+        /** 플래시 렌더/억제 추적용(실기기에서 "추가 깜박임"이 트리거인지 렌더인지 판별). */
+        private const val TAG = "OverlayManager"
+
         const val CHIP_TIMEOUT_MS = 2000L
 
         /**

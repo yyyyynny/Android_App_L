@@ -44,14 +44,17 @@ class HardwareKeyboardDetector(
     fun start(): Boolean {
         connected = detect()
         if (!registered) {
-            runCatching { inputManager.registerInputDeviceListener(listener, handler) }
-            registered = true
+            // 등록 실패를 성공으로 기록하면 재시도 없이 감지가 조용히 죽는다(ImeStateDetector 와
+            // 같은 이유로 실제 결과를 반영 — 다음 start() 에서 재시도된다).
+            registered = runCatching {
+                inputManager.registerInputDeviceListener(listener, handler)
+            }.isSuccess
         }
         return connected
     }
 
     fun stop() {
-        if (!registered) return
+        // 등록 플래그와 무관하게 무조건 해제 시도(부분 실패 상태에서 리스너가 살아남는 누수 방지).
         runCatching { inputManager.unregisterInputDeviceListener(listener) }
         registered = false
     }

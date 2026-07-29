@@ -55,9 +55,24 @@ class LangSenseAccessibilityService : AccessibilityService(),
     /**
      * 포커스 없는 키 입력 평가(접근성 노드 IPC)를 처리하는 백그라운드 스레드 (Bug 1).
      * onKeyEvent 가 도는 메인 스레드에서 무거운 조회를 빼내 키 디스패치가 막히지 않게 한다.
+     *
+     * 평가 스레드에서도 [keyEvalHandler] 를 읽으므로(scheduleVerify) @Volatile — 메인에서
+     * cleanup 이 null 을 쓰는 동안 stale 참조를 보지 않게 한다.
      */
+    @Volatile
     private var keyEvalThread: HandlerThread? = null
+
+    @Volatile
     private var keyEvalHandler: Handler? = null
+
+    /** 메인 스레드 예약용(윈도우 변경 디바운스 등). */
+    private val mainHandler = Handler(android.os.Looper.getMainLooper())
+
+    /** [scheduleSoftKeyboardRecheck] 재평가 예약이 이미 걸려 있는지. */
+    private var softKeyboardRecheckPending = false
+
+    /** 배지 재부착을 마지막으로 시도한 시각(uptime) — [retryBadgeIfMissing] 간격 제한. */
+    private var lastBadgeRetryAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -182,6 +197,35 @@ class LangSenseAccessibilityService : AccessibilityService(),
         else overlay.hideBadge()
     }
 
+    /**
+     * 배지가 떠 있어야 하는데 창 추가에 실패한 상태면 다시 시도한다.
+     *
+     * 접근성을 먼저 켜고 오버레이 권한을 나중에 준 경우, 최초 [refreshBadge] 의 addView 가
+     * 권한 없음으로 조용히 실패하고 이후 배지를 다시 붙일 트리거가 없어 "한/영을 실제로 전환하거나
+     * 회전하기 전까지 배지가 영영 안 뜨는" 상태가 된다. 창 전환 때마다 값싼 확인(플래그 비교)만
+     * 하고, 실제로 빠졌을 때만 재시도한다.
+     */
+    private fun retryBadgeIfMissing() {
+        if (!prefs.badgeEnabled || !featuresEnabled()) return
+        if (overlay.hasBadge()) return
+        // 권한이 계속 없으면 창 전환마다 addView 가 실패하므로 재시도 간격을 둔다.
+        val now = SystemClock.uptimeMillis()
+        if (now - lastBadgeRetryAt < BADGE_RETRY_INTERVAL_MS) return
+        lastBadgeRetryAt = now
+        refreshBadge()
+    }
+
+    /** [TYPE_WINDOWS_CHANGED] 폭주를 흡수하는 디바운스 재평가. */
+    private fun scheduleSoftKeyboardRecheck() {
+        if (!prefs.excludeTouchKeyboard) return // 기능 OFF 면 예약조차 하지 않는다(기존 무부하 유지)
+        if (softKeyboardRecheckPending) return
+        softKeyboardRecheckPending = true
+        mainHandler.postDelayed({
+            softKeyboardRecheckPending = false
+            refreshSoftKeyboardState()
+        }, WINDOWS_CHANGED_DEBOUNCE_MS)
+    }
+
     /** 외장 키보드 연결/해제 시: 소프트 키보드 표시 상태가 함께 바뀌므로 재평가(추가 기능 2). */
     private fun onKeyboardPresenceChanged() {
         if (!initialized) return
@@ -212,6 +256,10 @@ class LangSenseAccessibilityService : AccessibilityService(),
     private fun launchActivity(cls: Class<*>) {
         runCatching {
             startActivity(Intent(this, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure {
+            // 백그라운드 액티비티 실행 제한 등으로 실패하면 아무 반응이 없어 "메뉴가 먹통"으로
+            // 보인다. 최소한 실패를 알린다.
+            toastMsg(getString(R.string.quick_launch_failed))
         }
     }
 
@@ -242,10 +290,13 @@ class LangSenseAccessibilityService : AccessibilityService(),
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 imeDetector.onWindowStateChanged(event)
                 refreshSoftKeyboardState()
+                retryBadgeIfMissing()
             }
             // 소프트 키보드(IME) 창의 등장/소멸은 주로 이 이벤트로 온다 → 표시 상태 재평가(추가 기능 2).
             // (기능 OFF 면 refreshSoftKeyboardState 가 즉시 빠져나가 일반 사용자에겐 부하가 없다)
-            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> refreshSoftKeyboardState()
+            // 이 이벤트는 시스템 전역의 창 생성/소멸마다 오므로(초당 수십 회) 디바운스한다 —
+            // 옵션 ON 시 매번 전체 윈도우 IPC 를 메인 스레드에서 돌면 스크롤이 버벅인다.
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> scheduleSoftKeyboardRecheck()
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> {
                 markEditableActivity(event)
                 // 터치 키보드 제외 ON + 소프트 키보드 표시 중 → 한영타 교체 비활성(추가 기능 2).
@@ -378,6 +429,8 @@ class LangSenseAccessibilityService : AccessibilityService(),
         keyboardDetector = null
         if (::overlay.isInitialized) overlay.removeAll()
         // 백그라운드 키 평가 스레드 정리(예약된 평가 제거 후 루퍼 종료) — 누수 방지.
+        mainHandler.removeCallbacksAndMessages(null)
+        softKeyboardRecheckPending = false
         keyEvalHandler?.removeCallbacksAndMessages(null)
         keyEvalThread?.quitSafely()
         keyEvalThread = null
@@ -421,5 +474,19 @@ class LangSenseAccessibilityService : AccessibilityService(),
          * (이 값 미만 면적의 IME 창은 툴바로 보고 기능을 끄지 않는다 — 외장 키보드 툴바 오인 버그 방지)
          */
         private const val IME_KEYBOARD_MIN_SCREEN_AREA_FRACTION = 0.1f
+
+        /**
+         * `TYPE_WINDOWS_CHANGED` 재평가 디바운스(ms). 이 이벤트는 시스템 전역의 창 생성/소멸마다
+         * (팝업·토스트·다이얼로그·알림 shade …) 오므로, 매번 전체 윈도우 IPC 를 메인 스레드에서
+         * 돌면 "터치 키보드 제외" 옵션 사용자에게 체감 지연이 생긴다. 키보드 등장/소멸 반응이
+         * 늦었다고 느껴지지 않을 만큼 짧게 잡는다.
+         */
+        private const val WINDOWS_CHANGED_DEBOUNCE_MS = 150L
+
+        /**
+         * 배지 창 재부착 재시도 최소 간격(ms). 오버레이 권한을 접근성보다 나중에 준 경우를
+         * 스스로 복구하되, 권한이 끝내 없을 때 창 전환마다 실패 호출을 반복하지 않게 한다.
+         */
+        private const val BADGE_RETRY_INTERVAL_MS = 2000L
     }
 }
