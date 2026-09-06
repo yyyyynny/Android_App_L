@@ -326,8 +326,8 @@ WindowManager flags:
 ## Feature 5: 래디얼 메뉴 (배지 탭) — 사용자 원본 HTML 을 WebView 로 렌더
 
 상시 배지를 **탭**하면(드래그와 구분) 배지 주위로 살아 숨쉬는 유리 칩이 부채꼴로 펼쳐지는 간편 메뉴.
-**외형·모션의 진실은 HTML 파일**: `app/src/main/assets/radialmenu.html`(= 사용자 원본,
-`design/reference/radialmenu.html` 과 동일). 과거 네이티브(Canvas) 재이식은 원본과 미세하게 달라
+**외형·모션의 진실은 HTML 파일**: `app/src/main/assets/radialmenu.html`(사용자 원본
+`design/reference/radialmenu.html` 에 앱 통합 배선을 더한 배포본 — 원본 스냅샷과 동일하지 않음). 과거 네이티브(Canvas) 재이식은 원본과 미세하게 달라
 폐기했고, 이제 `QuickMenuOverlayView` 가 이 HTML 을 **WebView 로 그대로 렌더**한다(메뉴 외형을
 바꾸려면 Kotlin 이 아니라 HTML 을 고친다).
 

@@ -85,12 +85,9 @@
 ## 상태 관리
 
 ```kotlin
-data class ImeState(
-    val locale: String,
-    val subtypeId: Int,
-    val timestamp: Long
-)
-// emitIfChanged: 이전 lastState.locale 과 다를 때만 발동(중복 제거 1차).
+// 상태는 lastLang: String? 하나(마지막으로 발동한 언어). 과거의 ImeState(subtypeId/timestamp) 는
+// 어디서도 읽히지 않으면서 발동마다 IMM IPC(currentInputMethodSubtype) 를 낭비해 제거했다.
+// emitIfChanged: 이전 lastLang 과 다를 때만 발동(중복 제거 1차).
 // requestRecheck: 여러 감지 신호를 COALESCE_MS 동안 합침(2차) + 발동 후 REFRACTORY_MS 불응기(3차).
 // onServiceConnected 멱등화: 재연결 시 detector 중복 등록 방지(4차).
 // 안티-플랩(FLAP_GUARD_MS): 직전 언어로 되돌아가는 stale 재발동 차단(5차, 렌더 가드 700ms 뒤 누수 보완).

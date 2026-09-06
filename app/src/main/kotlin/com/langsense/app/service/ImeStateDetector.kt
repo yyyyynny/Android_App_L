@@ -14,7 +14,6 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.InputMethodSubtype
 import androidx.core.content.ContextCompat
-import com.langsense.app.model.ImeState
 import com.langsense.app.util.ImeLocaleParser
 
 /**
@@ -59,7 +58,8 @@ class ImeStateDetector(
     private val imm = appContext.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
     private val handler = Handler(Looper.getMainLooper())
 
-    private var lastState: ImeState? = null
+    /** 마지막으로 발동한(=현재로 아는) 언어. null 이면 아직 모름. */
+    private var lastLang: String? = null
 
     /**
      * 등록 성공 여부를 리시버/옵저버 **개별로** 추적한다. 과거처럼 둘을 AND 한 단일 플래그면,
@@ -100,7 +100,7 @@ class ImeStateDetector(
     private var lastEmitAt = 0L
 
     /**
-     * 직전 발동에서 "벗어난" 언어(= 그 전의 lastState.locale). 비권위 소스(팝업 힌트/IMM 폴백)가
+     * 직전 발동에서 "벗어난" 언어(= 그 전의 lastLang). 비권위 소스(팝업 힌트/IMM 폴백)가
      * [ECHO_GUARD_MS] 안에 이 언어로 되돌아가는 값을 내면 stale 메아리로 보고 무시한다.
      * 권위 소스(설정값 직접 읽기)에는 적용하지 않으므로 정상 빠른 재전환은 놓치지 않는다.
      */
@@ -108,7 +108,7 @@ class ImeStateDetector(
 
     /**
      * 마지막으로 관측한 권위 소스 키("IME id:서브타입 해시"). 권위 값은 **이 키가 실제로 바뀌었을
-     * 때만** 발동 근거가 된다 — lastState 와 다르다는 이유만으로 발동하면, 서브타입이 안 바뀌는
+     * 때만** 발동 근거가 된다 — lastLang 과 다르다는 이유만으로 발동하면, 서브타입이 안 바뀌는
      * 삼성 내부 토글 기기에서 힌트로 발동한 언어를 (변하지 않은) 설정값이 도로 뒤집는 새 중복
      * 깜박임이 생기기 때문. "설정값의 변화"만 전환 증거로 취급한다.
      */
@@ -142,8 +142,33 @@ class ImeStateDetector(
 
     /** 서비스 시작 시 호출: 리스너 등록 + 현재 언어 캐시(플래시 없이). 현재 언어 코드 반환. */
     fun start(): String {
+        registerListeners()
+        if (!receiverRegistered || !observerRegistered) {
+            // 주 감지 경로(옵저버/리시버)가 죽은 채 방치되면 "화면이 안 바뀌면 반응이 없는" 상태가
+            // 된다. 시스템 부하로 일시 실패했을 수 있으므로 잠시 뒤 1회 재등록을 시도한다
+            // (stop() 의 removeCallbacksAndMessages 가 취소를 담당).
+            handler.postDelayed(registerRetry, REGISTER_RETRY_MS)
+        }
+        val auth = readAuthoritative()
+        if (auth != null) lastAuthKey = auth.key
+        val lang = auth?.lang ?: immFallbackLang()
+        if (lang != ImeLocaleParser.UNKNOWN) {
+            lastLang = lang
+        }
+        return lang
+    }
+
+    private val registerRetry = Runnable {
+        registerListeners()
+        if (!receiverRegistered || !observerRegistered) {
+            Log.w(TAG, "listener re-registration still incomplete (receiver=$receiverRegistered, observer=$observerRegistered)")
+        }
+    }
+
+    /** 리시버/옵저버 등록. 실패한 쪽만 다시 시도한다(성공한 쪽은 그대로). */
+    private fun registerListeners() {
         // 등록이 실제로 실패했을 때 무조건 성공으로 기록하면 주 감지 경로가 조용히 죽은 채 재등록도
-        // 안 된다. 개별 플래그로 성공 여부를 반영해, 부분 실패 시 다음 start() 에서 실패한 쪽만 재시도.
+        // 안 된다. 개별 플래그로 성공 여부를 반영해, 부분 실패 시 실패한 쪽만 재시도.
         if (!receiverRegistered) {
             receiverRegistered = runCatching {
                 ContextCompat.registerReceiver(
@@ -171,13 +196,6 @@ class ImeStateDetector(
         if (!receiverRegistered || !observerRegistered) {
             Log.w(TAG, "listener registration incomplete (receiver=$receiverRegistered, observer=$observerRegistered)")
         }
-        val auth = readAuthoritative()
-        if (auth != null) lastAuthKey = auth.key
-        val lang = auth?.lang ?: immFallbackLang()
-        if (lang != ImeLocaleParser.UNKNOWN) {
-            lastState = ImeState(lang, currentSubtypeId(), System.currentTimeMillis())
-        }
-        return lang
     }
 
     /**
@@ -209,7 +227,7 @@ class ImeStateDetector(
         // (ECHO_GUARD_MS) 너머까지 이어져 stale IMM 값이 재발동하는 연료가 된다. 일반 윈도우
         // 이벤트는 백스톱 재확인만 하고 재시도 예산은 건드리지 않는다(시스템 전체 윈도우 변화마다
         // 오기 때문).
-        requestRecheck(popupLang, strong = popupLang != null && popupLang != lastState?.locale)
+        requestRecheck(popupLang, strong = popupLang != null && popupLang != lastLang)
     }
 
     /**
@@ -230,7 +248,7 @@ class ImeStateDetector(
             // 팝업 힌트는 비권위 소스: ① 현재 언어와 같으면 새 정보가 없고(폐기),
             // ② 방금 벗어난 언어로 곧장 되돌아가는 값이면 삼성 팝업의 지연된 메아리(폐기).
             // 그 외에는 저장 — 서브타입이 안 바뀌는 삼성 내부 토글의 연속 전환도 놓치지 않는다.
-            val noNews = popupHint == lastState?.locale
+            val noNews = popupHint == lastLang
             val echo = popupHint == prevLang && now - lastEmitAt < ECHO_GUARD_MS
             if (!noNews && !echo) pendingPopupHint = popupHint
         }
@@ -248,7 +266,7 @@ class ImeStateDetector(
      * 합쳐진 단일 재확인.
      *
      * 1) 권위 소스(설정값)를 먼저 평가하되, **관측 키가 실제로 바뀌었을 때만** 발동 근거로 삼는다.
-     *    (키 불변 = 설정값에 새 정보 없음. lastState 와 다르다는 이유로 발동하면 삼성 내부 토글
+     *    (키 불변 = 설정값에 새 정보 없음. lastLang 과 다르다는 이유로 발동하면 삼성 내부 토글
      *    기기에서 힌트 발동을 도로 뒤집는 중복 깜박임이 생긴다.)
      * 2) 권위 키가 그대로면 팝업 힌트가 유일한 신호(삼성 내부 토글: 서브타입 불변, 팝업만 변경).
      *    권위 키가 바뀌었는데 힌트가 그와 다르면 힌트는 stale 이므로 버려진다.
@@ -259,6 +277,16 @@ class ImeStateDetector(
      * 재확인한다(전환의 조용한 유실 방지).
      */
     private fun runRecheck() {
+        // 메인 루퍼 Runnable 에서 예외가 새면 접근성 서비스 프로세스가 통째로 죽는다(→ 시스템 재바인드에
+        // 의존, 일부 ROM 은 서비스를 꺼버림). 감지 1회를 잃는 편이 훨씬 싸다.
+        try {
+            runRecheckInner()
+        } catch (t: Throwable) {
+            Log.w(TAG, "recheck failed: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    private fun runRecheckInner() {
         pendingSince = 0L
         val hint = pendingPopupHint
         pendingPopupHint = null
@@ -327,13 +355,13 @@ class ImeStateDetector(
      */
     private fun emitIfChanged(lang: String, authoritative: Boolean): Boolean {
         if (lang == ImeLocaleParser.UNKNOWN) return false
-        val last = lastState?.locale
+        val last = lastLang
         if (lang == last) return false
         if (!authoritative && lang == prevLang &&
             SystemClock.uptimeMillis() - lastEmitAt < ECHO_GUARD_MS
         ) return false
         prevLang = last
-        lastState = ImeState(lang, currentSubtypeId(), System.currentTimeMillis())
+        lastLang = lang
         lastEmitAt = SystemClock.uptimeMillis()
         retriesLeft = 0 // 발동했으면 이 배치의 재시도는 끝
         pendingStrong = false // 발동 = 체인 종료
@@ -396,9 +424,6 @@ class ImeStateDetector(
         lastUnresolvedHash = 0
     }
 
-    private fun currentSubtypeId(): Int =
-        runCatching { imm.currentInputMethodSubtype?.hashCode() }.getOrNull() ?: -1
-
     /** Samsung/시스템 팝업으로 보이는 이벤트만 텍스트 fallback 대상으로. */
     private fun isSystemPopupSource(event: AccessibilityEvent): Boolean {
         val pkg = event.packageName?.toString() ?: return false
@@ -456,5 +481,8 @@ class ImeStateDetector(
 
         /** 권위 역행 의심 시 재확인까지의 유예(ms). 바운스 최종값이 설정에 반영되기에 충분한 시간. */
         private const val REVERT_CONFIRM_DELAY_MS = 250L
+
+        /** 리시버/옵저버 등록 실패 시 재등록까지의 지연(ms). */
+        private const val REGISTER_RETRY_MS = 5000L
     }
 }

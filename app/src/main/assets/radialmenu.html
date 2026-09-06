@@ -331,6 +331,16 @@ body.app-mode .menu .orb-wrap { pointer-events: auto; }
 body.reduce-motion .menu.open .orb-wrap { animation: none; }
 body.reduce-motion .orb { animation: none; }
 body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
+/* 저사양 모드의 최대 단일 이득: backdrop-filter(매 프레임 배경 readback + 블러) 와 50px 스프레드
+   글로우를 뺀다. 유리 질감은 약해지지만 정적인 림+글로우로 같은 인상을 유지한다.
+   풀모션 기기(reduce-motion 클래스 없음)는 원본 그대로. */
+body.reduce-motion .orb {
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  background: rgba(20, 60, 180, 0.30);
+  box-shadow:
+    0 0 0 1.5px rgba(180,240,255,0.55),
+    0 0 20px  6px rgba(120,200,255,0.70);
+}
 </style>
 </head>
 <body>
@@ -400,6 +410,8 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
     });
   }
   let positions = computePositions(0);
+  /* 현재 적용된 틸트. KikiInit 이 여러 번 와도(창 재사용) 값이 달라질 때만 재배치한다. */
+  let currentTilt = 0;
 
   /* ── SVG lines: spokes (badge->orb) + arc (orb->orb) ──── */
   const linesGlow  = document.getElementById('linesGlow');
@@ -710,6 +722,8 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
 
   /* ── Dust ─────────────────────────────────────────────── */
   const dustContainer = document.getElementById('dustContainer');
+  /* 22개 장식 요소. 저사양(reduce)이면 애니메이션만 끄는 게 아니라 아예 만들지 않는다(레이아웃/페인트 대상 제거). */
+  function buildDust() {
   for (let i = 0; i < 22; i++) {
     const el = document.createElement('div');
     el.className = 'dust';
@@ -723,15 +737,24 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
       --d-dur:${(3.5+Math.random()*4).toFixed(1)}s; --d-del:${(Math.random()*5).toFixed(1)}s;`;
     dustContainer.appendChild(el);
   }
+  }
 
-  /* ── 초기화: 선 곡선 호흡/별 구성 + 모드별 시작 ──────────── */
+  /* ── 초기화: 선 곡선 호흡/별/먼지 구성 + 모드별 시작 ──────── */
   let started = false;
+  let startedReduce = false;
+  /* 시스템 "애니메이션 제거/줄이기" 설정도 저사양 모드로 취급한다(접근성 앱이므로 특히 타당). */
+  const prefersReduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   function start(reduce) {
     if (started) return; // 폴백 타이머와 KikiInit 이 겹쳐도 별/호흡이 이중 생성되지 않게
     started = true;
+    startedReduce = reduce;
     applyLineBreath(reduce);
-    buildStars(reduce);
-    if (reduce) document.body.classList.add('reduce-motion');
+    if (reduce) {
+      document.body.classList.add('reduce-motion');
+    } else {
+      buildStars(false);
+      buildDust();
+    }
   }
 
   /* 앱(WebView): KikiInit 로 배지 위치/저사양/라벨을 받아 메뉴 전용 모드로 자동 오픈.
@@ -746,6 +769,13 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
         LABELS = cfg.labels.slice();
         orbLabels.forEach((el, i) => { el.textContent = LABELS[i]; });
         orbWraps.forEach((w, i) => w.setAttribute('aria-label', LABELS[i]));
+      }
+      // 창 재사용(reopen)으로 KikiInit 이 다시 온 경우: 이전 펼침 상태를 먼저 접어 두어야
+      // 아래 setOpen(true) 가 다시 동작한다(배지 숨김 등으로 KikiCollapse 없이 닫혔을 수 있음).
+      if (isOpen || menu.classList.contains('open')) {
+        isOpen = false;
+        menu.classList.remove('open');
+        scrim.classList.remove('show');
       }
       // 네이티브 배지 중심(CSS px=dp)에 팬의 배지 지점(BX,BY)을 맞춘다.
       // 스테이지(460×420)는 뷰포트보다 넓을 수 있으므로, 화면 안 유지는 스테이지 사각형이 아니라
@@ -798,19 +828,24 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
             if (cand.score < best.score - 0.5) best = cand; // 실질 개선일 때만(작은 틸트 우선)
           }
         }
-        if (best.tilt !== 0) {
+        if (best.tilt !== currentTilt) {
           positions = best.pts;
+          currentTilt = best.tilt;
           buildLines();
           applyOrbPositions();
+          // 이미 시작된 뒤의 재배치(재오픈)면 새 선에도 호흡을 다시 붙인다(buildLines 가 비웠으므로).
+          if (started && !startedReduce) applyLineBreath(false);
         }
         menu.classList.toggle('mirror', best.mirror);
         // scaleX(-1) 은 박스 중심 기준 반전이라, 미러 시 배지 지점의 시각적 x 는 (스테이지폭-BX).
         menu.style.left = (best.ax - (best.mirror ? 460 - BX : BX)) + 'px';
         menu.style.top  = (best.ay - BY) + 'px';
       }
-      start(!!cfg.reduceMotion);
+      start(!!cfg.reduceMotion || prefersReduced);
       // 다음 프레임에 펼침(트랜지션이 걸리도록).
       requestAnimationFrame(() => requestAnimationFrame(() => setOpen(true)));
+      // 초기화 완료 ack — 네이티브 워치독은 이 신호를 기준으로 "열리지도 닫히지도 않는" 창을 닫는다.
+      if (BRIDGE.onReady) { try { BRIDGE.onReady(); } catch (e) {} }
     };
     // 네이티브가 배지 재탭 등으로 우아한 수납을 요청할 때(수납 애니메이션만; 창 제거는 네이티브).
     window.KikiCollapse = function () { setOpen(false); };
@@ -823,7 +858,7 @@ body.reduce-motion .dust { animation: none; opacity: var(--d-lo, 0.20); }
       }
     }, 1500);
   } else {
-    start(false);
+    start(prefersReduced);
   }
 })();
 </script>

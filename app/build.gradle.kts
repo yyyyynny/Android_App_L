@@ -14,7 +14,6 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // ── 고정 공유 서명키 (요청 사항: 삭제 없이 덮어쓰기 설치) ─────────────────────────
@@ -42,7 +41,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 저사양 타겟: R8 로 미사용 코드 제거·최적화. 접근성 서비스/액티비티/JS 브리지는
+            // proguard-rules.pro 의 keep 규칙으로 보호한다(래디얼 메뉴는 JS 가 문자열 이름으로
+            // KikiNative.onItemTap/onDismiss/onReady 를 부르므로 난독화되면 조용히 먹통이 된다).
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -82,7 +84,6 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
 
     testImplementation(libs.junit)
 }

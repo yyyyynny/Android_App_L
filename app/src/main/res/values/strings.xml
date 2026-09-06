@@ -70,7 +70,7 @@
     <!-- 플로팅 메뉴(배지 탭 래디얼 메뉴) -->
     <string name="settings_radial">플로팅 메뉴(배지 탭)</string>
     <string name="settings_radial_reduce_motion">저사양 모드 (움직임 줄이기)</string>
-    <string name="settings_radial_reduce_motion_desc">켜면 메뉴를 펼친 뒤 오브가 떠다니는 움직임과 선을 따라 흐르는 빛 효과를 꺼서 펼친 메뉴가 가만히 멈춰 있습니다. 펼치고 접는 동작은 그대로예요. 저사양 기기에서 발열·전력을 줄이고 싶을 때 켜세요.</string>
+    <string name="settings_radial_reduce_motion_desc">켜면 메뉴를 펼친 뒤 오브가 떠다니는 움직임·별·먼지·선의 흔들림과 유리 블러를 꺼서 펼친 메뉴가 가만히 멈춰 있습니다. 펼치고 접는 동작은 그대로예요. 직접 정하지 않으면 기기 사양(메모리 4GB 이하, 시스템 애니메이션 끔)에 맞춰 자동으로 켜집니다.</string>
 
     <!-- 간편 메뉴(비눗방울 래디얼) -->
     <string name="quick_app">앱</string>

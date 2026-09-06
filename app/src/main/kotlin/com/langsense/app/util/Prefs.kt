@@ -1,5 +1,7 @@
 package com.langsense.app.util
 
+import android.animation.ValueAnimator
+import android.app.ActivityManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Color
@@ -12,8 +14,10 @@ import android.graphics.Color
  */
 class Prefs(context: Context) {
 
+    private val appContext: Context = context.applicationContext
+
     val sp: SharedPreferences =
-        context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+        appContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
 
     // ---- Feature 1: 플래시 ----
     var flashEnabled: Boolean
@@ -106,12 +110,38 @@ class Prefs(context: Context) {
 
     // ---- 플로팅 메뉴(배지 탭 래디얼 메뉴) ----
     /**
-     * 저사양(움직임 줄이기) 모드. ON 이면 메뉴를 펼친 뒤의 연속 애니메이션(부유/빛 점)을 꺼서
-     * 펼친 메뉴가 완전히 정적이 된다(펼침/수납 애니메이션은 유지). 저사양 기기 발열/전력 절감용. 기본 OFF.
+     * 저사양(움직임 줄이기) 모드. ON 이면 메뉴를 펼친 뒤의 연속 애니메이션(오브 morph/부유/별/먼지/
+     * 선 호흡)을 끄고 유리 블러도 뺀다(펼침/수납 애니메이션은 유지).
+     *
+     * 사용자가 설정에서 명시적으로 정하지 않았으면([radialReduceMotionIsAuto]) 기기 사양으로 자동
+     * 판정한다 — 풀모션 메뉴는 비합성 애니메이션 32개(backdrop-filter 오브 5 + SVG path morph 18 +
+     * 블러 9)라 4GB 급 태블릿(Galaxy Tab S6 Lite 등)에서 60fps 유지가 안 된다.
      */
     var radialReduceMotion: Boolean
-        get() = sp.getBoolean(KEY_RADIAL_REDUCE_MOTION, false)
+        get() = if (sp.contains(KEY_RADIAL_REDUCE_MOTION)) {
+            sp.getBoolean(KEY_RADIAL_REDUCE_MOTION, false)
+        } else {
+            autoReduceMotion()
+        }
         set(v) = sp.edit().putBoolean(KEY_RADIAL_REDUCE_MOTION, v).apply()
+
+    /** 저사양 모드가 사용자 명시값이 아니라 자동 판정 중인지. */
+    val radialReduceMotionIsAuto: Boolean
+        get() = !sp.contains(KEY_RADIAL_REDUCE_MOTION)
+
+    /**
+     * 자동 판정: 저RAM 기기이거나 총 메모리 ≤ 4GiB(하드웨어 — 1회 계산 캐시), 또는 시스템 애니메이션
+     * 배율이 0(사용자가 "애니메이션 제거"를 켠 상태 — 실시간 반영, WebView 의 prefers-reduced-motion 과
+     * 같은 값을 따르므로 HTML 판정과 일치).
+     */
+    private fun autoReduceMotion(): Boolean {
+        val hw = lowSpecHardware ?: runCatching {
+            val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val mi = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            am.isLowRamDevice || mi.totalMem <= LOW_SPEC_TOTAL_MEM_BYTES
+        }.getOrDefault(false).also { lowSpecHardware = it }
+        return hw || !ValueAnimator.areAnimatorsEnabled()
+    }
 
     // ---- 지원 언어 토글 ----
     fun isLangEnabled(lang: String): Boolean = when (lang) {
@@ -173,6 +203,13 @@ class Prefs(context: Context) {
     companion object {
         const val NAME = "langsense_prefs"
         const val FLASH_ALPHA = 0.85f
+
+        /** 하드웨어 저사양 판정 캐시(프로세스 수명 동안 불변). */
+        @Volatile
+        private var lowSpecHardware: Boolean? = null
+
+        /** 이 총 메모리 이하면 저사양으로 본다(4GiB — Galaxy Tab S6 Lite 급). */
+        private const val LOW_SPEC_TOTAL_MEM_BYTES = 4L shl 30
 
         /** 배지 배경 불투명도(0.8 = 0xCC). 기본 배경(#000000)에 적용하면 기존 #CC000000 과 동일. */
         const val BADGE_BG_ALPHA = 0.8f

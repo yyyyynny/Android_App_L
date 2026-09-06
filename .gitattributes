@@ -1,0 +1,6 @@
+* text=auto
+*.kt text
+*.kts text
+*.html text
+*.md text
+*.xml text

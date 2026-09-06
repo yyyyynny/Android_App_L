@@ -8,6 +8,11 @@
     - flagRequestFilterKeyEvents   : onKeyEvent 수신 (Feature 3, 포커스 없는 키 입력)
     - canRequestFilterKeyEvents    : 키 이벤트 필터 권한 요청
     보안 원칙: 필요한 이벤트 타입만 등록, 텍스트 '내용'은 읽지 않고(편집 여부만), 키 이벤트는 절대 소비하지 않음.
+
+    ⚠️ 이 XML 은 **최대 집합**이다. 실제 구독 이벤트/플래그는 서비스가 런타임에 `syncServiceInfo()` 로
+    켜진 기능만큼만 좁힌다(저사양 최적화 — 예: 포커스 경고 OFF 면 키 필터·텍스트 변경 구독을 내리고,
+    터치 키보드 제외 OFF 면 typeWindowsChanged/윈도우 추적을 내린다). `can*` 능력은 런타임에 다시 켜기
+    위해 여기 남겨 둬야 한다. notificationTimeout 도 런타임에 100ms 로 조정된다.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeViewTextSelectionChanged|typeViewTextChanged"

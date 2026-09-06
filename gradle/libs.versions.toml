@@ -1,26 +1,24 @@
-# ⚠️ agp/coreKtx/lifecycle 은 서로 얽혀서 상한선이 걸려 있다(2026-07 확인, 실제 빌드로 검증됨).
-# AGP 를 9.x 로 올리기 전까지는 아래 두 줄도 이 이상 못 올린다 — "왜 최신이 아니지?" 헷갈리지 말 것.
+# ⚠️ agp/coreKtx 는 서로 얽혀서 상한선이 걸려 있다(2026-07 확인, 실제 빌드로 검증됨).
+# AGP 를 9.x 로 올리기 전까지는 coreKtx 도 이 이상 못 올린다 — "왜 최신이 아니지?" 헷갈리지 말 것.
 #   - agp: 9.x 는 Gradle 9.1+ 요구(현재 gradle-wrapper 는 8.11.1). AGP+Gradle 를 동시에 메이저
 #     업그레이드해야 하는 별도 작업이라 미룸. (kIkI 클라우드 세션은 Gradle 9.x 배포본을 받는
 #     github.com 릴리스 경로가 막혀 있어 여기서는 검증 자체가 불가능했음 — 로컬 PC 에서 진행할 것.)
 #   - coreKtx: 1.17.0+ 는 compileSdk 36+, 1.19.0(최신)은 AGP 9.1+ 를 요구. 지금 compileSdk=35,
 #     agp=8.7.3 조합에서 실제 컴파일되는 최신 버전이 1.16.0.
-#   - lifecycle: 2.9.0 이상 전부 lifecycle 자체 내장 lint 검사기(NonNullableMutableLiveDataDetector)가
-#     AGP 8.7.3 의 lint 엔진과 클래스 비호환(IncompatibleClassChangeError)이라 `gradle lintDebug` 가
-#     크래시한다(코드 문제 아님, 순수 툴체인 궁합 문제). 2.8.7 이 안전한 상한선.
-# → agp 를 9.x 로 올리면 이 두 제약이 한꺼번에 풀린다. 그때 coreKtx/lifecycle 도 최신으로 같이 올릴 것.
+#   - lifecycle: 명시 의존을 제거했다(코드 참조 0건 — appcompat 의 전이 의존으로만 들어온다).
+#     과거 명시 버전 2.9.0+ 는 내장 lint 검사기가 AGP 8.7.3 lint 엔진과 비호환이라 2.8.7 상한이
+#     걸려 있었는데, 명시 의존 자체를 빼면서 그 제약도 사라졌다.
+# → agp 를 9.x 로 올리면 coreKtx 제약이 풀린다. 그때 coreKtx 도 최신으로 같이 올릴 것.
 [versions]
 agp = "8.7.3"
 kotlin = "2.0.21"
 coreKtx = "1.16.0"
 appcompat = "1.7.1"
-lifecycle = "2.8.7"
 junit = "4.13.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
-androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

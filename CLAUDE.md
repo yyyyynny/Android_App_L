@@ -122,8 +122,11 @@ IME 언어가 변경될 때 전체 화면에 플래시 오버레이를 표시하
   `typeViewTextSelectionChanged` 이벤트를 낸다. 최근(`RECENT_INPUT_MS`=1.2s) 그런 "입력 실착"이
   있었으면 포커스 조회 결과와 무관하게 포커스 있음으로 간주해 경고를 억제(포커스가 정말 없으면
   그 이벤트가 없으므로 진짜 경고는 유지). → "입력은 되는데 경고가 뜨는" 오발동 해결.
-- **저사양 최적화**: 포커스 조회는 비싸므로 **기능 ON + ACTION_DOWN + 비반복 + 실제 문자 키 +
-  최근 입력 실착 없음** 게이트를 통과한 뒤에만 지연 평가. 1차는 활성 윈도우만 보는 저비용 조회,
+- **저사양 최적화**: 기능 OFF 면 `syncServiceInfo()` 가 키 필터 플래그(키당 system_server↔앱 Binder
+  동기 왕복 2회)와 텍스트 변경 구독을 아예 내려 콜백이 오지 않는다. 키 평가 스레드도 ON 일 때만 존재.
+  ON 이면 포커스 조회는 비싸므로 **ACTION_DOWN + 비반복 + 실제 문자 키 + 최근 입력 실착 없음** 게이트를
+  통과한 뒤에만 백그라운드에서 평가하고, 조회 결과는 150ms 캐시(`FOCUS_PROBE_CACHE_MS`; 지연 검증은
+  캐시 미사용). 편집 여부 확인(노드 IPC)은 결과와 무관하게 300ms 당 1회로 상한. 1차는 활성 윈도우만 보는 저비용 조회,
   없을 때만 2차로 전체 윈도우 순회(일시적 null 방어). 모디파이어/반복/단축키/기능 OFF 에선 노드 트리를 안 건드림.
 - **발동 전 지연 검증(`WARN_VERIFY_DELAY_MS`=400ms)**: 저사양 기기는 글자가 실제 입력돼도 그 확인
   이벤트(text/selection 변경)와 포커스 노드 갱신이 수백 ms 늦게 온다. 임계값 도달 즉시 경고하면 그
@@ -180,7 +183,7 @@ IME 언어가 변경될 때 전체 화면에 플래시 오버레이를 표시하
 간편 메뉴를 띄운다. 빈 곳/항목 탭 시 닫힘.
 
 - **외형·모션의 진실은 HTML 파일**: `app/src/main/assets/radialmenu.html`(= 사용자가 직접 제공한
-  원본, `design/reference/radialmenu.html` 과 동일). 과거 네이티브(Canvas) 재해석은 원본과 미세하게
+  원본 `design/reference/radialmenu.html` 의 스냅샷에 앱 통합 배선을 더한 배포본 — 원본과 동일하지 않음). 과거 네이티브(Canvas) 재해석은 원본과 미세하게
   달라 폐기했고, 이제 `QuickMenuOverlayView` 가 이 HTML 을 **WebView 로 그대로 렌더**한다.
   ⚠️ 메뉴 외형을 바꾸려면 Kotlin 이 아니라 이 HTML 을 고친다.
 - **원본에서 앱이 바꾼 것(사용자 요청)**: ① 선 위를 이동하던 빛 점(travel dot) 제거,
@@ -218,7 +221,16 @@ IME 언어가 변경될 때 전체 화면에 플래시 오버레이를 표시하
   순서와 달라 "숨기기를 눌렀는데 앱이 열리는" 오동작이 된다).
 - 항목(서비스가 주입): **앱 열기 / 설정 / 플래시 토글 / 한영타 토글 / 배지 숨기기**.
   토글은 탭 시점에 `Prefs` 를 읽어 현재 상태를 뒤집고 토스트로 새 상태(켜짐/꺼짐)를 안내.
-- "저사양 모드(움직임 줄이기)" ON: 원본의 연속 애니메이션(오브 morph/부유/별/먼지/선 sway) 정지.
+- "저사양 모드(움직임 줄이기)" ON: 원본의 연속 애니메이션(오브 morph/부유/선 호흡) 정지 + 별/먼지
+  **미생성** + 오브의 `backdrop-filter`/50px 글로우 제거(reduce 모드에서만 외형 단순화 — 풀모션 기기는
+  원본 그대로). 사용자가 설정에서 명시하지 않았으면 **기기 자동 판정**(`Prefs.radialReduceMotion`:
+  isLowRamDevice || 총 메모리 ≤ 4GiB || 시스템 애니메이션 배율 0) — Tab S6 Lite(4GB)는 기본 ON.
+  HTML 은 `prefers-reduced-motion` 도 같은 모드로 취급.
+- **WebView 재사용(저사양)**: 닫힌 메뉴 창의 WebView 를 `QUICK_MENU_CACHE_MS`(20s) 동안 보관했다가
+  다음 오픈 때 `reopen()`(KikiInit 재호출)으로 즉시 연다 — 콜드 스타트(저사양 0.5~1.5s) 회피.
+  만료·`onTrimMemory`·서비스 정리·렌더러 사망(`isDead`)·저사양 모드 값 변경 시 `destroyNow()`.
+  JS 는 KikiInit 끝에 `KikiNative.onReady()` 로 ack 하며 워치독(로드 3s/재오픈 1.5s)은 이 ack 기준.
+  HTML 은 재오픈 시 이전 펼침 상태를 접고 틸트를 `currentTilt` 와 비교해 달라질 때만 재배치.
 - 배지가 사라지거나 서비스 정리 시 메뉴(WebView 창)도 함께 제거.
 - 구현: `QuickMenuOverlayView`(WebView 호스트 + JS↔네이티브 브리지, 외부 의존성 없음) +
   `assets/radialmenu.html`(원본 렌더 대상).
@@ -236,7 +248,10 @@ IME 언어가 변경될 때 전체 화면에 플래시 오버레이를 표시하
   클립보드/추천 툴바(얇은 띠)와 실제 터치 키보드(플로팅/분리형 포함)를 면적으로 가른다.
 - 외장 키보드 연결 자체는 `HardwareKeyboardDetector`(`InputManager`+`InputDevice`, 가상이 아닌
   알파벳 키보드만 인정)가 실시간 감지하며, `onConfigurationChanged` 가 도킹 등 일부 경로의 백스톱.
-- 옵션이 꺼져 있으면(기본값) `windows` 순회를 하지 않아 일반 사용자에겐 부하가 없다.
+  이 감지기는 **옵션 ON 일 때만 생성**된다(OFF 면 그 결과가 하는 일이 없어 순수 오버헤드).
+- 옵션이 꺼져 있으면(기본값) `windows` 순회를 하지 않을 뿐 아니라 `TYPE_WINDOWS_CHANGED` 구독과
+  윈도우 추적 플래그 자체를 `syncServiceInfo()` 가 내려 이벤트가 앱에 도달조차 하지 않는다.
+  ON 이면 `TYPE_WINDOW_STATE_CHANGED`/`TYPE_WINDOWS_CHANGED` 모두 150ms 디바운스 후 재평가.
 
 ---
 
@@ -371,6 +386,22 @@ SettingsActivity
    `onLanguageChanged` 는 전환당 1회만 호출되도록 했고 `emitCount`+`Log.d` 로 실기기 검증 가능
    (렌더 안전망이 가려도 로그로 실제 트리거 수 확인 가능). 키 입력 시 전체 윈도우 순회는 게이트 통과 후로 지연.
 9. **앱 표시 이름 = kIkI**: 사용자에게 보이는 문구만 kIkI. 패키지/applicationId(`com.langsense.app`), 클래스명(`LangSenseAccessibilityService`), 리소스 id(`Theme.LangSense`), Gradle `rootProject.name` 등 **식별자는 절대 변경 금지**.
+10. **서비스 생존성(2026-08)**: 접근성 서비스에서 uncaught exception 은 프로세스 사망 → 시스템 재바인드
+    의존(일부 ROM 은 접근성 토글을 꺼버림)이고, `onServiceConnected` 재초기화 중 예외는 `initialized=false`
+    영구 고착 = "살아있지만 완전 무반응"(USB 연결 후 무반응 증상의 유력 원인). 그래서 **모든 시스템 콜백·
+    핸들러 작업·백그라운드 평가는 `guarded{}` 로 감싸고**(감지 1회 유실 < 서비스 사망), `initialize()`
+    실패는 2s 간격 최대 3회 자동 재시도, 키 평가 HandlerThread 는 uncaught 시 재생성(루퍼만 죽고 큐가
+    살아 post 가 쌓이는 조용한 정지 방지), `ImeStateDetector` 리스너 등록 실패는 5s 후 재등록.
+    특히 `hasActiveEditableFocus()` 는 백그라운드 스레드에서 돌므로 노드 접근/회수를 전부 보호한다.
+11. **저사양 원칙(2026-08)**: ① 서비스 설정은 정적 XML 이 아니라 `syncServiceInfo()` 가 켜진 기능만큼만
+    구독(키 필터·윈도우 추적·텍스트 변경은 해당 기능 ON 일 때만, notificationTimeout 100ms).
+    ② 이벤트당 노드 IPC 최대 1회(선택 변경은 입력 실착 확인과 한영타 판정이 소스 노드를 공유, 소유권은
+    `TextSelectionMonitor.onSelectionChanged(node): Boolean` 반환값으로 이전). ③ 한영타 판정은
+    `HangulConverter.analyze()` 1회(정규식·이중 변환 없음), 전체 텍스트 복사는 칩을 띄울 때만.
+    ④ 배지 스타일은 시그니처가 같으면 재적용 생략, 플래시 창은 재생 후 INVISIBLE 로 1.5s 유지해 연속
+    전환 시 창 생성/파괴 생략, 메뉴 WebView 는 20s 유휴 캐시. ⑤ `ImeState.subtypeId` 처럼 읽는 곳 없는
+    IPC 는 제거. ⑥ release 는 R8(`isMinifyEnabled=true`, Log.d 제거) — JS 브리지 keep 규칙 필수.
+    ⑦ 래디얼 메뉴 저사양 모드는 기기 자동 판정(Feature 5 참조).
 
 ---
 
